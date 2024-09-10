@@ -9,3 +9,5 @@ pytesseract==0.3.10
 deep-translator==1.11.1
 asyncio==3.4.3
 typing==3.7.4.3
+opencv-python==4.5.5.64
+numpy==1.21.5
