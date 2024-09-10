@@ -2,7 +2,7 @@ livekit-agents==0.8.0
 livekit-plugins-deepgram==0.6.0
 livekit-plugins-openai==0.7.0
 livekit-plugins-silero==0.6.0
-livekit==1.1.0
+livekit==0.15.2
 python-dotenv==0.21.1
 Pillow==9.5.0
 pytesseract==0.3.10
