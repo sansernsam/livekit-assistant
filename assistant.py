@@ -5,6 +5,7 @@ from typing import Annotated
 from PIL import ImageGrab
 import pytesseract
 from deep_translator import GoogleTranslator
+from contextlib import asynccontextmanager
 
 load_dotenv()  # Load environment variables from .env file
 
@@ -17,6 +18,18 @@ from livekit.agents.llm import (
 )
 from livekit.agents.voice_assistant import VoiceAssistant
 from livekit.plugins import deepgram, openai, silero
+
+class TranslationError(Exception):
+    pass
+
+@asynccontextmanager
+async def get_translator(source: str, target: str):
+    translator = GoogleTranslator(source=source, target=target)
+    try:
+        yield translator
+    finally:
+        # If GoogleTranslator needs any cleanup, do it here
+        pass
 
 class EnhancedAssistantFunction(agents.llm.FunctionContext):
     """This class is used to define functions that will be called by the assistant."""
@@ -39,7 +52,7 @@ class EnhancedAssistantFunction(agents.llm.FunctionContext):
                 description="The user message that triggered this function"
             ),
         ],
-    ):
+    ) -> str:
         try:
             print(f"Message triggering vision capabilities: {user_msg}")
             if self.latest_image:
@@ -56,14 +69,17 @@ class EnhancedAssistantFunction(agents.llm.FunctionContext):
                 return description
             else:
                 return "I'm sorry, but I don't have access to any image at the moment."
+        except pytesseract.TesseractError as e:
+            print(f"OCR error: {e}")
+            return "I encountered an error while trying to read the image. Could you please try again?"
         except Exception as e:
-            print(f"Error in image processing: {e}")
-            return "I encountered an error while trying to process the image. Could you please try again?"
+            print(f"Unexpected error in image processing: {e}")
+            return "I encountered an unexpected error. Could you please try again?"
 
     @agents.llm.ai_callable(
         description="Capture and analyze the current screen content"
     )
-    async def capture_screen(self):
+    async def capture_screen(self) -> str:
         try:
             # Capture the screen
             screenshot = ImageGrab.grab()
@@ -75,9 +91,12 @@ class EnhancedAssistantFunction(agents.llm.FunctionContext):
             analysis = f"Screen content: {text[:100]}..."  # Truncated for brevity
             
             return analysis
+        except pytesseract.TesseractError as e:
+            print(f"OCR error during screen capture: {e}")
+            return "I encountered an error while trying to read the screen content. Could you please try again?"
         except Exception as e:
-            print(f"Error in screen capture: {e}")
-            return "I encountered an error while trying to capture the screen. Could you please try again?"
+            print(f"Unexpected error in screen capture: {e}")
+            return "I encountered an unexpected error while trying to capture the screen. Could you please try again?"
 
     @agents.llm.ai_callable(
         description="Handle Thai language input and generate Thai responses"
@@ -90,24 +109,22 @@ class EnhancedAssistantFunction(agents.llm.FunctionContext):
                 description="The Thai language input from the user"
             ),
         ],
-    ):
+    ) -> str:
         try:
-            translator = GoogleTranslator(source='th', target='en')
-            
-            # Translate Thai to English
-            english_input = translator.translate(thai_input)
-            
-            # Process the English input using your existing pipeline
-            english_response = await self.process_input(english_input)
-            
-            # Translate the response back to Thai
-            translator = GoogleTranslator(source='en', target='th')
-            thai_response = translator.translate(english_response)
-            
+            async with get_translator('th', 'en') as th_to_en, \
+                       get_translator('en', 'th') as en_to_th:
+                
+                english_input = await th_to_en.translate(thai_input)
+                english_response = await self.process_input(english_input)
+                thai_response = await en_to_th.translate(english_response)
+                
             return thai_response
+        except TranslationError as e:
+            print(f"Translation error: {e}")
+            return "เกิดข้อผิดพลาดในการแปล โปรดลองอีกครั้ง"  # "A translation error occurred. Please try again."
         except Exception as e:
-            print(f"Error in Thai processing: {e}")
-            return "เกิดข้อผิดพลาดในการประมวลผลภาษาไทย โปรดลองอีกครั้ง"  # "An error occurred in Thai processing. Please try again."
+            print(f"Unexpected error in Thai processing: {e}")
+            return "เกิดข้อผิดพลาดที่ไม่คาดคิด โปรดลองอีกครั้ง"  # "An unexpected error occurred. Please try again."
 
     async def process_input(self, input_text: str) -> str:
         # This is a placeholder for your existing English processing pipeline
@@ -117,7 +134,7 @@ class EnhancedAssistantFunction(agents.llm.FunctionContext):
     def set_latest_image(self, image):
         self.latest_image = image
 
-async def get_video_track(room: rtc.Room):
+async def get_video_track(room: rtc.Room) -> rtc.RemoteVideoTrack:
     """Get the first video track from the room. We'll use this track to process images."""
 
     video_track = asyncio.Future[rtc.RemoteVideoTrack]()
@@ -207,17 +224,28 @@ async def entrypoint(ctx: JobContext):
     await asyncio.sleep(1)
     await assistant.say("Hi there! How can I help?", allow_interruptions=True)
 
-    while ctx.room.connection_state == rtc.ConnectionState.CONN_CONNECTED:
+    while True:
         try:
-            video_track = await get_video_track(ctx.room)
-            async for event in rtc.VideoStream(video_track):
-                enhanced_assistant_function.set_latest_image(event.frame)
-        except Exception as e:
-            print(f"Error in video processing: {e}")
-            await asyncio.sleep(5)  # Wait before retrying
+            while ctx.room.connection_state == rtc.ConnectionState.CONN_CONNECTED:
+                try:
+                    video_track = await get_video_track(ctx.room)
+                    async for event in rtc.VideoStream(video_track):
+                        enhanced_assistant_function.set_latest_image(event.frame)
+                except rtc.TrackSubscriptionFailed as e:
+                    print(f"Failed to subscribe to video track: {e}")
+                    await asyncio.sleep(5)  # Wait before retrying
+                except rtc.MediaStreamError as e:
+                    print(f"Media stream error: {e}")
+                    await asyncio.sleep(5)  # Wait before retrying
+                except Exception as e:
+                    print(f"Unexpected error in video processing: {e}")
+                    await asyncio.sleep(5)  # Wait before retrying
 
-    # Keep the assistant running even if there's an error
-    await asyncio.sleep(3600)  # Keep running for an hour, adjust as needed
+            print("Connection to room lost. Attempting to reconnect...")
+            await ctx.reconnect()  # Assuming there's a reconnect method
+        except Exception as e:
+            print(f"Unexpected error in main loop: {e}")
+            await asyncio.sleep(10)  # Wait before restarting the main loop
 
 if __name__ == "__main__":
     cli.run_app(WorkerOptions(entrypoint_fnc=entrypoint))
