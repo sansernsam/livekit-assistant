@@ -1,9 +1,9 @@
-livekit-agents==0.8.11
+livekit-agents[codecs,images]==0.8.11
 livekit-plugins-deepgram==0.6.6
 livekit-plugins-openai==0.7.1
 livekit-plugins-silero==0.6.4
 python-dotenv==0.21.1
-Pillow==9.5.0
+Pillow==10.3.0
 pytesseract==0.3.10
 deep-translator==1.11.4
 opencv-python==4.5.5.64
